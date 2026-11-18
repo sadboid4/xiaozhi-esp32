@@ -10,6 +10,7 @@
 #include <freertos/task.h>
 #include <esp_network.h>
 #include <esp_log.h>
+#include <esp_wifi.h>
 #include <utility>
 
 #include <font_awesome.h>
@@ -114,6 +115,7 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
 #endif
             in_config_mode_ = false;
             ESP_LOGI(TAG, "Connected to WiFi: %s", data.c_str());
+            esp_wifi_set_ps(WIFI_PS_NONE); // Disable WiFi power save for ultra-low latency streaming
             break;
         case NetworkEvent::Scanning:
             ESP_LOGI(TAG, "WiFi scanning");

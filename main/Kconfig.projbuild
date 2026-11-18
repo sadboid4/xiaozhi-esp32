@@ -558,6 +558,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_ZHENGCHEN_1_54TFT_WIFI
         bool "征辰科技1.54(WIFI)"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_DUYBOT_LIVE2D
+        bool "DuyBot Live2D MJPEG"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_ZHENGCHEN_1_54TFT_ML307
         bool "征辰科技1.54(ML307)"
         depends on IDF_TARGET_ESP32S3

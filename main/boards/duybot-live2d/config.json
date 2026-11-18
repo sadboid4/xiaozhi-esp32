@@ -1,0 +1,11 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "duybot-live2d",
+            "sdkconfig_append": [
+                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y"
+            ]
+        }
+    ]
+}

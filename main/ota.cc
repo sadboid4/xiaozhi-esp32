@@ -46,7 +46,7 @@ Ota::~Ota() {
 std::string Ota::GetCheckVersionUrl() {
     Settings settings("wifi", false);
     std::string url = settings.GetString("ota_url");
-    if (url.empty()) {
+    if (url.empty() || url.find("tenclass.net") != std::string::npos) {
         url = CONFIG_OTA_URL;
     }
     return url;

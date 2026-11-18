@@ -12,6 +12,8 @@
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
+#include <esp_timer.h>
+#include <esp_rom_sys.h>
 
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
@@ -166,6 +168,133 @@ private:
     }
 
     void InitializeTools() {
+        // Cấu hình các chân GPIO làm Output cho motor và siêu âm
+        gpio_config_t io_conf = {};
+        io_conf.intr_type = GPIO_INTR_DISABLE;
+        io_conf.mode = GPIO_MODE_OUTPUT;
+        io_conf.pin_bit_mask = (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_12) | (1ULL << GPIO_NUM_13) | (1ULL << GPIO_NUM_14) | (1ULL << GPIO_NUM_10);
+        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+        gpio_config(&io_conf);
+
+        // Cấu hình chân ECHO (GPIO 18) làm Input
+        gpio_config_t echo_conf = {};
+        echo_conf.intr_type = GPIO_INTR_DISABLE;
+        echo_conf.mode = GPIO_MODE_INPUT;
+        echo_conf.pin_bit_mask = (1ULL << GPIO_NUM_18);
+        echo_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        echo_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+        gpio_config(&echo_conf);
+
+        // Cấu hình chân Dò Line (GPIO 3) làm Input với Pull-up
+        gpio_config_t line_conf = {};
+        line_conf.intr_type = GPIO_INTR_DISABLE;
+        line_conf.mode = GPIO_MODE_INPUT;
+        line_conf.pin_bit_mask = (1ULL << GPIO_NUM_3);
+        line_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        line_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        gpio_config(&line_conf);
+
+        // Đảm bảo ban đầu tắt hết động cơ và Trig
+        gpio_set_level(GPIO_NUM_11, 0);
+        gpio_set_level(GPIO_NUM_12, 0);
+        gpio_set_level(GPIO_NUM_13, 0);
+        gpio_set_level(GPIO_NUM_14, 0);
+        gpio_set_level(GPIO_NUM_10, 0);
+
+        auto& mcp_server = McpServer::GetInstance();
+
+        // Đăng ký tool robot_chassis.move
+        mcp_server.AddTool("self.robot_chassis.move",
+            "Control the movement of the robot companion car (DuyBot). Directions: 'forward', 'backward', 'left' (turn left in place), 'right' (turn right in place), 'stop'. duration_ms is the time to run in milliseconds (default: 1000, max: 10000).",
+            PropertyList({
+                Property("direction", kPropertyTypeString),
+                Property("duration_ms", kPropertyTypeInteger, 1000)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                auto direction = properties["direction"].value<std::string>();
+                int duration_ms = properties["duration_ms"].value<int>();
+
+                // Điều khiển GPIO
+                if (direction == "forward") {
+                    gpio_set_level(GPIO_NUM_11, 1);
+                    gpio_set_level(GPIO_NUM_12, 0);
+                    gpio_set_level(GPIO_NUM_13, 1);
+                    gpio_set_level(GPIO_NUM_14, 0);
+                } else if (direction == "backward") {
+                    gpio_set_level(GPIO_NUM_11, 0);
+                    gpio_set_level(GPIO_NUM_12, 1);
+                    gpio_set_level(GPIO_NUM_13, 0);
+                    gpio_set_level(GPIO_NUM_14, 1);
+                } else if (direction == "left") {
+                    gpio_set_level(GPIO_NUM_11, 0);
+                    gpio_set_level(GPIO_NUM_12, 1);
+                    gpio_set_level(GPIO_NUM_13, 1);
+                    gpio_set_level(GPIO_NUM_14, 0);
+                } else if (direction == "right") {
+                    gpio_set_level(GPIO_NUM_11, 1);
+                    gpio_set_level(GPIO_NUM_12, 0);
+                    gpio_set_level(GPIO_NUM_13, 0);
+                    gpio_set_level(GPIO_NUM_14, 1);
+                } else { // "stop"
+                    gpio_set_level(GPIO_NUM_11, 0);
+                    gpio_set_level(GPIO_NUM_12, 0);
+                    gpio_set_level(GPIO_NUM_13, 0);
+                    gpio_set_level(GPIO_NUM_14, 0);
+                    return "Stopped";
+                }
+
+                // Nếu có duration, tạo task tự động tắt
+                if (duration_ms > 0) {
+                    if (duration_ms > 10000) duration_ms = 10000; // Giới hạn max 10 giây để an toàn
+                    xTaskCreate([](void* arg) {
+                        uint32_t delay = (uint32_t)(uintptr_t)arg;
+                        vTaskDelay(pdMS_TO_TICKS(delay));
+                        gpio_set_level(GPIO_NUM_11, 0);
+                        gpio_set_level(GPIO_NUM_12, 0);
+                        gpio_set_level(GPIO_NUM_13, 0);
+                        gpio_set_level(GPIO_NUM_14, 0);
+                        vTaskDelete(NULL);
+                    }, "stop_motor", 2048, (void*)(uintptr_t)duration_ms, 5, NULL);
+                }
+
+                return "Moving " + direction + " for " + std::to_string(duration_ms) + " ms";
+            });
+
+        // Đăng ký tool robot_chassis.get_distance
+        mcp_server.AddTool("self.robot_chassis.get_distance",
+            "Read the current distance (in centimeters) to any obstacle in front of the robot companion car using the HC-SR04 ultrasonic sensor. Returns -1 if out of range or timeout.",
+            PropertyList(),
+            [](const PropertyList& properties) -> ReturnValue {
+                gpio_set_level(GPIO_NUM_10, 0);
+                esp_rom_delay_us(2);
+                gpio_set_level(GPIO_NUM_10, 1);
+                esp_rom_delay_us(10);
+                gpio_set_level(GPIO_NUM_10, 0);
+
+                int64_t start = esp_timer_get_time();
+                int64_t timeout = start + 30000; // 30ms timeout
+                while (gpio_get_level(GPIO_NUM_18) == 0) {
+                    if (esp_timer_get_time() > timeout) return -1.0;
+                }
+                int64_t t_start = esp_timer_get_time();
+                while (gpio_get_level(GPIO_NUM_18) == 1) {
+                    if (esp_timer_get_time() > timeout) return -1.0;
+                }
+                int64_t t_end = esp_timer_get_time();
+                double duration = (double)(t_end - t_start);
+                double distance = duration * 0.017;
+                return distance;
+            });
+
+        // Đăng ký tool robot_chassis.get_line_status
+        mcp_server.AddTool("self.robot_chassis.get_line_status",
+            "Read the state of the line tracking sensor (MH-B). Returns 1 if a black line is detected, and 0 if a white background is detected.",
+            PropertyList(),
+            [](const PropertyList& properties) -> ReturnValue {
+                int val = gpio_get_level(GPIO_NUM_3);
+                return val;
+            });
     }
 
 public:
